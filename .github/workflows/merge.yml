@@ -1,0 +1,48 @@
+name: Merge AV
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: Luma video URL (public)
+        required: true
+      audio_url:
+        description: MP3 URL (public or data URI)
+        required: true
+      webhook_url:
+        description: n8n webhook to POST the result to
+        required: true
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg curl jq
+
+      - name: Download video
+        run: curl -L "${{ github.event.inputs.video_url }}" -o video.mp4
+
+      - name: Download audio (URL or data URI)
+        shell: bash
+        run: |
+          AU="${{ github.event.inputs.audio_url }}"
+          if [[ "$AU" == data:* ]]; then
+            echo "$AU" | sed 's/^data:audio\/mpeg;base64,//' | base64 -d > narration.mp3
+          else
+            curl -L "$AU" -o narration.mp3
+          fi
+
+      - name: Merge (shortest)
+        run: ffmpeg -y -i video.mp4 -i narration.mp3 -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest out.mp4
+
+      - name: Upload (transfer.sh)
+        id: up
+        run: |
+          URL=$(curl --upload-file ./out.mp4 https://transfer.sh/out-$(date +%s).mp4)
+          echo "url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Callback to n8n
+        run: |
+          curl -s -X POST -H "Content-Type: application/json" \
+            -d "{\"video_url\":\"${{ steps.up.outputs.url }}\"}" \
+            "${{ github.event.inputs.webhook_url }}"
